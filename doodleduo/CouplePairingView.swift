@@ -177,6 +177,6 @@ struct CouplePairingView: View {
 }
 
 #Preview {
-    let authService = AuthService()
+    let authService = AuthService(managesDeviceTokens: false)
     CouplePairingView(sessionManager: CoupleSessionManager(authService: authService), profile: nil, onPaired: {})
 }

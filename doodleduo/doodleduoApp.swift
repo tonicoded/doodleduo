@@ -27,8 +27,8 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         print("📱 Device token received:", tokenString)
         Task {
             // Get current user ID and register device token (or save for later if not signed in yet)
-            let userId = AuthService().currentUser?.id
-            if let userId = userId {
+            let userId = AuthService(managesDeviceTokens: false).currentUser?.id
+            if userId != nil {
                 print("📱 User signed in - registering device token immediately")
             } else {
                 print("📱 User not signed in yet - saving device token for later")
@@ -107,10 +107,17 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 @main
 struct doodleduoApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var delegate
+    @Environment(\.scenePhase) private var scenePhase
     
     var body: some Scene {
         WindowGroup {
             ContentView()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+            Task {
+                _ = await WidgetSyncService.shared.syncLatestDoodle(trigger: .backgroundRefresh)
+            }
         }
     }
 }

@@ -8,6 +8,7 @@
 import SwiftUI
 import UIKit
 import PencilKit
+import WidgetKit
 
 struct ActivityView: View {
     @ObservedObject var sessionManager: CoupleSessionManager
@@ -28,27 +29,25 @@ struct ActivityView: View {
     private let activitiesPerPage = 10
     @State private var showingNoteSheet = false
     @State private var showingDoodleSheet = false
+    @State private var showingVoiceSheet = false
+    @State private var loadErrorMessage: String?
     
     var body: some View {
-        NavigationStack {
-            ZStack {
-                CozyPalette.background(for: colorScheme)
-                    .ignoresSafeArea()
-                
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 20) {
-                        headerView
-                        doodleStudioCard
-                        quickActionsCard
-                        activityFeedSection
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                    .padding(.bottom, 36)
+        ZStack {
+            CozyPalette.background(for: colorScheme)
+                .ignoresSafeArea()
+            
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 20) {
+                    headerView
+                    doodleStudioCard
+                    quickActionsCard
+                    activityFeedSection
                 }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 36)
             }
-            .navigationTitle("Activity")
-            .navigationBarTitleDisplayMode(.large)
         }
         .sheet(isPresented: $showingNoteSheet) {
             NoteComposerSheet(
@@ -73,6 +72,17 @@ struct ActivityView: View {
                 },
                 onCancel: {
                     showingDoodleSheet = false
+                }
+            )
+        }
+        .sheet(isPresented: $showingVoiceSheet) {
+            VoiceMessageSheet(
+                partnerName: friendlyName(from: sessionManager.partnerName) ?? sessionManager.partnerName ?? "partner",
+                onSend: { audioData, duration in
+                    await sendVoiceMessage(audioData, duration: duration)
+                },
+                onCancel: {
+                    showingVoiceSheet = false
                 }
             )
         }
@@ -134,17 +144,15 @@ struct ActivityView: View {
                 )
                 
                 StatBadge(
-                    icon: "flame.fill",
-                    label: "streak",
-                    value: "\(sessionManager.metrics?.currentStreak ?? 0)",
+                    icon: "calendar.badge.clock",
+                    label: "days survived",
+                    value: survivalTimeText,
                     gradient: [
-                        Color(red: 1.0, green: 0.66, blue: 0.27),
-                        Color(red: 1.0, green: 0.39, blue: 0.19),
-                        Color(red: 0.85, green: 0.18, blue: 0.22)
+                        Color(red: 0.67, green: 0.91, blue: 0.76),
+                        Color(red: 0.41, green: 0.73, blue: 0.93)
                     ],
-                    glowColor: Color(red: 1.0, green: 0.45, blue: 0.2),
-                    showFire: false,
-                    symbolColor: Color(red: 1.0, green: 0.74, blue: 0.28)
+                    glowColor: Color(red: 0.45, green: 0.77, blue: 0.76),
+                    symbolColor: Color(red: 0.24, green: 0.53, blue: 0.82)
                 )
             }
         }
@@ -163,52 +171,130 @@ struct ActivityView: View {
         .padding(.vertical, 6)
         .background(Capsule().fill(Color.black.opacity(0.15)))
     }
+
+    private var survivalTimeText: String {
+        guard let farm = sessionManager.farm else {
+            return "0d 0h 0m"
+        }
+
+        let elapsed = Date().timeIntervalSince(farm.createdAt)
+        let days = Int(elapsed / (24 * 3600))
+        let hours = Int((elapsed.truncatingRemainder(dividingBy: 24 * 3600)) / 3600)
+        let minutes = Int((elapsed.truncatingRemainder(dividingBy: 3600)) / 60)
+        return "\(days)d \(hours)h \(minutes)m"
+    }
     
     private var doodleStudioCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label("live doodle studio", systemImage: "sparkles")
-                .font(.headline)
-                .foregroundColor(.primary)
-            Text("Open a shared whiteboard and sketch with \(sessionManager.partnerName ?? "your partner") in real time.")
-                .font(.callout)
-                .foregroundColor(.secondary)
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Status")
-                        .font(.caption)
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [CozyPalette.mintGreen, CozyPalette.mintGreen.opacity(0.7)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 50, height: 50)
+                        .shadow(color: CozyPalette.mintGreen.opacity(0.4), radius: 12, y: 6)
+                    
+                    Image(systemName: "paintpalette.fill")
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(.white)
+                }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("creative studio")
+                        .font(.title2.weight(.bold))
+                        .foregroundColor(.primary)
+                    Text("Collaborate on digital artwork together")
+                        .font(.callout)
                         .foregroundColor(.secondary)
-                    Text(sessionManager.partnerName == nil ? "waiting for partner" : "connected")
-                        .font(.subheadline.weight(.semibold))
+                }
+            }
+            
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(sessionManager.partnerName != nil ? Color.green : Color.orange)
+                            .frame(width: 8, height: 8)
+                        Text("Status")
+                            .font(.caption.weight(.medium))
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Text(sessionManager.partnerName == nil ? "Waiting for partner" : "Ready to create")
+                        .font(.subheadline.weight(.bold))
                         .foregroundColor(.primary)
                 }
+                
                 Spacer()
-                Button {
-                    showingDoodleSheet = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "pencil.and.outline")
-                        Text("open board")
-                            .fontWeight(.semibold)
+                
+                VStack(spacing: 8) {
+                    Button {
+                        showingDoodleSheet = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "paintbrush.fill")
+                                .font(.body.weight(.bold))
+                            Text("draw")
+                                .font(.body.weight(.bold))
+                                .lineLimit(1)
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                        .background(
+                            LinearGradient(
+                                colors: [CozyPalette.mintGreen, CozyPalette.mintGreen.opacity(0.8)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            in: RoundedRectangle(cornerRadius: 25, style: .continuous)
+                        )
+                        .shadow(color: CozyPalette.mintGreen.opacity(0.4), radius: 8, y: 4)
                     }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background(Capsule().fill(CozyPalette.warmPink))
-                    .foregroundColor(.white)
+                    .buttonStyle(.plain)
+                    .disabled(sessionManager.partnerName == nil)
+                    .opacity(sessionManager.partnerName == nil ? 0.6 : 1)
+                    
+                    Text("+10 pts")
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(CozyPalette.mintGreen)
                 }
-                .buttonStyle(.plain)
-                .disabled(sessionManager.partnerName == nil)
-                .opacity(sessionManager.partnerName == nil ? 0.6 : 1)
+            }
+            
+            // Feature highlights
+            HStack(spacing: 20) {
+                featureItem(icon: "arrow.clockwise", text: "Live sync")
+                featureItem(icon: "paintbrush.pointed", text: "Brushes")
+                featureItem(icon: "square.and.arrow.down", text: "Share")
             }
         }
-        .padding(22)
+        .padding(24)
         .background(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
+            RoundedRectangle(cornerRadius: 32, style: .continuous)
                 .fill(CozyPalette.cardBackground(for: colorScheme))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .stroke(CozyPalette.warmPink.opacity(0.2), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 32, style: .continuous)
+                        .stroke(CozyPalette.mintGreen.opacity(0.2), lineWidth: 1)
                 )
+                .shadow(color: .black.opacity(0.08), radius: 20, y: 10)
         )
+    }
+    
+    private func featureItem(icon: String, text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(CozyPalette.mintGreen)
+            Text(text)
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
     }
     
     private var activityFeedSection: some View {
@@ -233,7 +319,11 @@ struct ActivityView: View {
                 }
             }
             
-            if activities.isEmpty && !isLoading {
+            if isLoading && activities.isEmpty {
+                loadingStateView
+            } else if let loadErrorMessage, activities.isEmpty {
+                errorStateView(message: loadErrorMessage)
+            } else if activities.isEmpty {
                 emptyStateView
             } else {
                 VStack(spacing: 12) {
@@ -270,13 +360,13 @@ struct ActivityView: View {
     }
     
     private var quickActionsCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 20) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("quick gestures")
-                        .font(.headline)
-                    Text("Send a little burst of love before the feed.")
-                        .font(.caption)
+                    Text("express yourself")
+                        .font(.title2.weight(.bold))
+                    Text("Share emotions and moments with your partner")
+                        .font(.callout)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
@@ -287,88 +377,207 @@ struct ActivityView: View {
                 }
             }
             
-            HStack(spacing: 14) {
-                QuickActionButton(
+            // Main gesture actions
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
+                EnhancedActionButton(
                     icon: "💖",
+                    label: "ping",
+                    points: "+2",
                     tint: DuoActivity.ActivityType.ping.color,
                     action: sendPing,
                     isActive: lastSentType == .ping,
                     isDisabled: sessionManager.partnerName == nil || sendingActivity
                 )
                 
-                QuickActionButton(
+                EnhancedActionButton(
                     icon: "🤗",
+                    label: "hug",
+                    points: "+3",
                     tint: DuoActivity.ActivityType.hug.color,
                     action: sendHug,
                     isActive: lastSentType == .hug,
                     isDisabled: sessionManager.partnerName == nil || sendingActivity
                 )
                 
-                QuickActionButton(
+                EnhancedActionButton(
                     icon: "😘",
+                    label: "kiss",
+                    points: "+4",
                     tint: DuoActivity.ActivityType.kiss.color,
                     action: sendKiss,
                     isActive: lastSentType == .kiss,
                     isDisabled: sessionManager.partnerName == nil || sendingActivity
                 )
                 
-                Spacer(minLength: 0)
+                EnhancedActionButton(
+                    icon: "💝",
+                    label: "surprise",
+                    points: "+5",
+                    tint: Color.purple,
+                    action: sendSurprise,
+                    isActive: lastSentType == .ping,
+                    isDisabled: sessionManager.partnerName == nil || sendingActivity
+                )
             }
             
-            Button {
-                showingNoteSheet = true
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "square.and.pencil")
-                        .font(.body.weight(.semibold))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Write a note")
-                            .font(.body.weight(.semibold))
-                        Text("A thoughtful message earns love points")
-                            .font(.caption)
-                            .foregroundColor(.white.opacity(0.9))
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.bold))
-                }
-                .foregroundColor(.white)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 14)
-                .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [CozyPalette.softLavender, CozyPalette.mintGreen],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
+            // Additional gesture row
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
+                EnhancedActionButton(
+                    icon: "🌟",
+                    label: "sparkle",
+                    points: "+3",
+                    tint: Color.yellow,
+                    action: sendSparkle,
+                    isActive: false,
+                    isDisabled: sessionManager.partnerName == nil || sendingActivity
                 )
-                .shadow(color: CozyPalette.softLavender.opacity(0.4), radius: 8, x: 0, y: 4)
+                
+                EnhancedActionButton(
+                    icon: "🎉",
+                    label: "celebrate",
+                    points: "+4",
+                    tint: Color.orange,
+                    action: sendCelebrate,
+                    isActive: false,
+                    isDisabled: sessionManager.partnerName == nil || sendingActivity
+                )
+                
+                EnhancedActionButton(
+                    icon: "☕",
+                    label: "coffee",
+                    points: "+2",
+                    tint: Color.brown,
+                    action: sendCoffee,
+                    isActive: false,
+                    isDisabled: sessionManager.partnerName == nil || sendingActivity
+                )
+                
+                EnhancedActionButton(
+                    icon: "🌙",
+                    label: "goodnight",
+                    points: "+3",
+                    tint: Color.indigo,
+                    action: sendGoodnight,
+                    isActive: false,
+                    isDisabled: sessionManager.partnerName == nil || sendingActivity
+                )
             }
-            .buttonStyle(.plain)
-            .disabled(sessionManager.partnerName == nil || sendingActivity)
-            .opacity(sessionManager.partnerName == nil ? 0.6 : 1)
+            
+            Divider()
+                .background(Color.white.opacity(0.2))
+            
+            // Enhanced action buttons
+            VStack(spacing: 12) {
+                Button {
+                    showingNoteSheet = true
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "square.and.pencil")
+                            .font(.title3.weight(.semibold))
+                            .frame(width: 24, height: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Write a love note")
+                                .font(.body.weight(.bold))
+                            Text("Share your thoughts and feelings (+5 pts)")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.85))
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color(red: 0.95, green: 0.39, blue: 0.8),
+                                        Color(red: 0.8, green: 0.4, blue: 0.9)
+                                    ],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                    )
+                    .shadow(color: Color(red: 0.95, green: 0.39, blue: 0.8).opacity(0.4), radius: 12, x: 0, y: 6)
+                }
+                .buttonStyle(.plain)
+                .disabled(sessionManager.partnerName == nil || sendingActivity)
+                .opacity(sessionManager.partnerName == nil ? 0.6 : 1)
+                
+                Button {
+                    showingVoiceSheet = true
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "mic.fill")
+                            .font(.title3.weight(.semibold))
+                            .frame(width: 24, height: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Send voice message")
+                                .font(.body.weight(.bold))
+                            Text("Record a sweet message (+8 pts)")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.85))
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color(red: 0.4, green: 0.8, blue: 0.9),
+                                        Color(red: 0.3, green: 0.6, blue: 0.8)
+                                    ],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                    )
+                    .shadow(color: Color(red: 0.4, green: 0.8, blue: 0.9).opacity(0.4), radius: 12, x: 0, y: 6)
+                }
+                .buttonStyle(.plain)
+                .disabled(sessionManager.partnerName == nil || sendingActivity)
+                .opacity(sessionManager.partnerName == nil ? 0.6 : 1)
+            }
             
             if sessionManager.partnerName == nil {
-                Text("Invite your partner to unlock gestures and notes.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(Color.orange)
+                    Text("Invite your partner to unlock all expressions")
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 8)
             } else {
-                Text("Gestures post straight into latest moments above.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Color.green)
+                    Text("All expressions unlocked! Share the love ✨")
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 8)
             }
         }
-        .padding(20)
+        .padding(24)
         .background(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
+            RoundedRectangle(cornerRadius: 32, style: .continuous)
                 .fill(CozyPalette.cardBackground(for: colorScheme))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .stroke(Color.primary.opacity(0.03), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 32, style: .continuous)
+                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
                 )
+                .shadow(color: .black.opacity(0.08), radius: 20, y: 10)
         )
     }
     
@@ -392,6 +601,42 @@ struct ActivityView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 40)
     }
+
+    private var loadingStateView: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .progressViewStyle(.circular)
+            Text("Loading shared moments…")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 36)
+    }
+    
+    private func errorStateView(message: String) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "icloud.slash")
+                .font(.system(size: 44))
+                .foregroundStyle(Color.orange)
+            Text("Can’t reach Supabase")
+                .font(.headline)
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 20)
+            Button {
+                Task { await loadActivitiesSafely() }
+            } label: {
+                Text("Try again")
+                    .font(.callout.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 36)
+    }
     
     private func sendPing() {
         Task {
@@ -411,6 +656,36 @@ struct ActivityView: View {
         }
     }
     
+    private func sendSurprise() {
+        Task {
+            await sendActivityWithFeedback(type: .note, content: "sent you a surprise! 💝")
+        }
+    }
+    
+    private func sendSparkle() {
+        Task {
+            await sendActivityWithFeedback(type: .note, content: "sprinkled some magic ✨")
+        }
+    }
+    
+    private func sendCelebrate() {
+        Task {
+            await sendActivityWithFeedback(type: .note, content: "is celebrating with you! 🎉")
+        }
+    }
+    
+    private func sendCoffee() {
+        Task {
+            await sendActivityWithFeedback(type: .note, content: "wants to have coffee with you ☕")
+        }
+    }
+    
+    private func sendGoodnight() {
+        Task {
+            await sendActivityWithFeedback(type: .note, content: "wishes you sweet dreams 🌙")
+        }
+    }
+    
     private func sendNote() {
         let noteText = newNote.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !noteText.isEmpty else { return }
@@ -421,6 +696,18 @@ struct ActivityView: View {
             await MainActor.run {
                 newNote = ""
             }
+        }
+    }
+    
+    private func sendVoiceMessage(_ audioData: Data, duration: TimeInterval) async {
+        // Store audio data as base64 with metadata
+        let base64Audio = audioData.base64EncodedString()
+        let content = "voice_message:\(String(format: "%.0f", duration)):\(base64Audio)"
+        
+        await sendActivityWithFeedback(type: .note, content: content)
+        
+        await MainActor.run {
+            showingVoiceSheet = false
         }
     }
     
@@ -473,9 +760,20 @@ struct ActivityView: View {
     }
     
     private func sendActivity(type: DuoActivity.ActivityType, content: String) async {
+        print("🚀 Attempting to send \(type) activity")
+        print("📍 currentRoomID:", sessionManager.currentRoomID?.uuidString ?? "nil")
+        print("👤 currentUser:", authService.currentUser?.id.uuidString ?? "nil")
+        print("🔑 session exists:", authService.session != nil ? "yes" : "no")
+        
         guard let roomId = sessionManager.currentRoomID,
               let userId = authService.currentUser?.id,
-              let session = authService.session else { return }
+              let session = authService.session else {
+            print("❌ Missing required data for activity:")
+            print("   roomId:", sessionManager.currentRoomID?.uuidString ?? "nil")
+            print("   userId:", authService.currentUser?.id.uuidString ?? "nil") 
+            print("   session:", authService.session != nil ? "exists" : "nil")
+            return
+        }
         
         do {
             // Create activity in database
@@ -496,6 +794,7 @@ struct ActivityView: View {
             
             request.httpBody = try JSONSerialization.data(withJSONObject: payload)
             
+            print("📡 Making request to:", request.url?.absoluteString ?? "nil")
             let (data, response) = try await URLSession.shared.data(for: request)
             
             guard let httpResponse = response as? HTTPURLResponse else {
@@ -503,17 +802,25 @@ struct ActivityView: View {
                 return
             }
             
+            print("📨 Response status:", httpResponse.statusCode)
+            
             if httpResponse.statusCode >= 400 {
                 let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
                 print("❌ Create activity error:", httpResponse.statusCode, errorBody)
                 return
             }
             
-            print("✅ Activity created successfully")
+            let responseBody = String(data: data, encoding: .utf8) ?? "No response body"
+            print("✅ Activity created successfully - Response:", responseBody)
             
             // Refresh activities and metrics
             await loadActivitiesSafely()
             try? await sessionManager.refreshMetrics()
+            
+            // Reset animal health timers due to activity
+            await MainActor.run {
+                sessionManager.onActivitySent()
+            }
             
         } catch {
             print("❌ Error sending activity:", error)
@@ -521,8 +828,12 @@ struct ActivityView: View {
     }
     
     private func loadActivitiesSafely() async {
-        // Cancel any existing loading task
-        loadingTask?.cancel()
+        // If already loading, wait for it to complete instead of cancelling
+        if let existingTask = loadingTask {
+            print("🔄 Already loading activities, waiting for completion...")
+            await existingTask.value
+            return
+        }
         
         // Create new task
         loadingTask = Task {
@@ -530,14 +841,19 @@ struct ActivityView: View {
         }
         
         await loadingTask?.value
+        loadingTask = nil
     }
     
     private func refreshActivitiesSafely() async {
         // Don't show loading spinner for refresh
         guard !isLoading else { return }
         
-        // Cancel any existing loading task
-        loadingTask?.cancel()
+        // If already loading, wait for it to complete instead of cancelling
+        if let existingTask = loadingTask {
+            print("🔄 Already loading activities, waiting for completion...")
+            await existingTask.value
+            return
+        }
         
         // Create new task
         loadingTask = Task {
@@ -545,6 +861,7 @@ struct ActivityView: View {
         }
         
         await loadingTask?.value
+        loadingTask = nil
     }
     
     private func loadActivities() async {
@@ -561,8 +878,22 @@ struct ActivityView: View {
     
     private func loadActivitiesInternal() async {
         guard let roomId = sessionManager.currentRoomID,
-              let session = authService.session else { return }
+              let session = authService.session else {
+            print("❌ Cannot load activities - missing roomId or session")
+            print("   roomId:", sessionManager.currentRoomID?.uuidString ?? "nil")
+            print("   session:", authService.session != nil ? "exists" : "nil")
+            await MainActor.run {
+                loadErrorMessage = "Sign in and pair up to see your shared feed."
+            }
+            return
+        }
+
+        print("🔄 Loading activities for room:", roomId.uuidString)
         
+        await MainActor.run {
+            loadErrorMessage = nil
+        }
+
         do {
             // Fetch activities from database
             let environment = SupabaseEnvironment.makeCurrent()
@@ -573,12 +904,14 @@ struct ActivityView: View {
                 URLQueryItem(name: "order", value: "created_at.desc"),
                 URLQueryItem(name: "limit", value: "50")
             ]
-            
+
             guard let url = components?.url else {
                 print("❌ Failed to build activities URL")
                 return
             }
-            
+
+            print("📡 Fetching activities from:", url.absoluteString)
+
             var request = URLRequest(url: url)
             request.httpMethod = "GET"
             request.allHTTPHeaderFields = environment.headers(accessToken: session.accessToken)
@@ -617,6 +950,7 @@ struct ActivityView: View {
                 if !Task.isCancelled {
                     activities = duoActivities
                     currentTime = Date()
+                    loadErrorMessage = nil
                     
                     // Update widget with latest partner doodle
                     updateWidgetWithLatestPartnerDoodle(duoActivities)
@@ -633,7 +967,7 @@ struct ActivityView: View {
             if !Task.isCancelled {
                 print("❌ Error loading activities:", error)
                 await MainActor.run {
-                    activities = []
+                    loadErrorMessage = "We couldn’t refresh the feed. Tap retry."
                 }
             }
         }
@@ -685,13 +1019,19 @@ struct ActivityView: View {
         }
         
         print("✅ Saving doodle to widget store (\(imageData.count) bytes)")
+        print("🎨 Doodle details - Partner: \(partnerName), Date: \(doodle.createdAt)")
         
         // Save to widget store
         DoodleWidgetStore.shared.saveReceivedDoodle(
             imageData: imageData,
             fromPartner: partnerName,
-            activityDate: doodle.createdAt
+            activityDate: doodle.createdAt,
+            activityID: doodle.id
         )
+        
+        // Force widget refresh
+        print("🔄 Force refreshing widget timeline")
+        WidgetCenter.shared.reloadTimelines(ofKind: "LatestDoodleWidget")
     }
     
     private func checkForNewPartnerActivities(_ activities: [DuoActivity]) {
@@ -715,11 +1055,18 @@ struct ActivityView: View {
             return 
         }
         
-        // Check if this activity is recent (within last 20 minutes for debugging)
+        // For doodles we already trigger a push & widget refresh via Supabase, so skip duplicate local notification
+        if activity.type == .doodle {
+            print("🔔 Skipping local notification for doodle – push is handled via Supabase trigger")
+            return
+        }
+
+        // Check if this activity is recent (within last 5 minutes only)
         let timeSinceActivity = Date().timeIntervalSince(activity.createdAt)
         print("⏰ Most recent partner activity: \(activity.type) from \(timeSinceActivity/60) minutes ago")
         
-        if timeSinceActivity <= 1200 { // 20 minutes for debugging
+        // Only send notifications for very recent activities (5 minutes) to avoid duplicates
+        if timeSinceActivity <= 300 { // 5 minutes
             print("✅ Sending notification for recent partner activity: \(activity.type)")
             // This is a recent activity from partner - send notification
             NotificationManager.shared.sendPartnerActivityNotification(
@@ -1014,6 +1361,61 @@ struct QuickActionButton: View {
     }
 }
 
+struct EnhancedActionButton: View {
+    let icon: String
+    let label: String
+    let points: String
+    let tint: Color
+    let action: () -> Void
+    let isActive: Bool
+    let isDisabled: Bool
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: isActive ? [tint, tint.opacity(0.7)] : [tint.opacity(isDisabled ? 0.4 : 0.8), tint.opacity(isDisabled ? 0.3 : 0.6)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(height: 60)
+                        .shadow(
+                            color: tint.opacity(isActive ? 0.5 : 0.25), 
+                            radius: isActive ? 12 : 6, 
+                            x: 0, 
+                            y: isActive ? 8 : 4
+                        )
+                        .scaleEffect(isActive ? 1.05 : 1.0)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isActive)
+                    
+                    Text(icon)
+                        .font(.title2)
+                        .scaleEffect(isActive ? 1.1 : 1.0)
+                        .animation(.spring(response: 0.4), value: isActive)
+                }
+                
+                VStack(spacing: 2) {
+                    Text(label)
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(.primary)
+                    
+                    Text(points)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(tint)
+                        .opacity(0.8)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.6 : 1.0)
+    }
+}
+
 // MARK: - Activity Models
 
 struct DuoActivity: Identifiable, Hashable {
@@ -1082,6 +1484,7 @@ struct SimpleActivityCard: View {
     let currentTime: Date
     @ObservedObject var photoManager: PhotoManager
     @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var audioPlayer = AudioPlayer()
     
     private var isCurrentUser: Bool {
         guard let currentUserId = currentUserId else { return false }
@@ -1120,8 +1523,35 @@ struct SimpleActivityCard: View {
     
     private var plainContent: String {
         guard activity.type != .doodle else { return "Shared a doodle" }
+        
+        // Handle voice messages
+        if isVoiceMessage {
+            let duration = voiceMessageDuration ?? 0
+            return "🎙️ Voice message (\(String(format: "%.0f", duration))s)"
+        }
+        
         let trimmed = activity.content.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? activity.type.icon : trimmed
+    }
+    
+    private var isVoiceMessage: Bool {
+        activity.content.hasPrefix("voice_message:")
+    }
+    
+    private var voiceMessageDuration: TimeInterval? {
+        guard isVoiceMessage else { return nil }
+        let components = activity.content.components(separatedBy: ":")
+        guard components.count >= 3,
+              let duration = TimeInterval(components[1]) else { return nil }
+        return duration
+    }
+    
+    private var voiceMessageData: Data? {
+        guard isVoiceMessage else { return nil }
+        let components = activity.content.components(separatedBy: ":")
+        guard components.count >= 3 else { return nil }
+        let base64String = components[2]
+        return Data(base64Encoded: base64String)
     }
     
     
@@ -1160,6 +1590,8 @@ struct SimpleActivityCard: View {
                 
                 if let doodleImage = doodleImage {
                     doodlePreview(image: doodleImage)
+                } else if isVoiceMessage {
+                    voiceMessagePlayer
                 } else {
                     Text(plainContent)
                         .font(.body)
@@ -1173,6 +1605,90 @@ struct SimpleActivityCard: View {
             RoundedRectangle(cornerRadius: 18)
                 .fill(CozyPalette.cardBackground(for: colorScheme))
         )
+    }
+    
+    private var voiceMessagePlayer: some View {
+        HStack(spacing: 12) {
+            // Play/pause button
+            Button {
+                if audioPlayer.isPlaying {
+                    audioPlayer.pause()
+                } else if let audioData = voiceMessageData {
+                    audioPlayer.play(audioData: audioData)
+                }
+            } label: {
+                Image(systemName: audioPlayer.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.title3)
+                    .foregroundColor(.white)
+                    .frame(width: 40, height: 40)
+                    .background(
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color(red: 0.4, green: 0.8, blue: 0.9),
+                                        Color(red: 0.3, green: 0.6, blue: 0.8)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                    )
+                    .shadow(color: Color(red: 0.4, green: 0.8, blue: 0.9).opacity(0.4), radius: 8, y: 4)
+            }
+            .disabled(voiceMessageData == nil)
+            
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("🎙️ Voice message")
+                        .font(.body.weight(.medium))
+                        .foregroundColor(.primary)
+                    
+                    Spacer()
+                    
+                    if let duration = voiceMessageDuration {
+                        Text("\(String(format: "%.0f", duration))s")
+                            .font(.caption.weight(.medium))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                // Progress bar
+                if audioPlayer.duration > 0 {
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            // Background
+                            Rectangle()
+                                .fill(Color.gray.opacity(0.3))
+                                .frame(height: 3)
+                                .cornerRadius(1.5)
+                            
+                            // Progress
+                            Rectangle()
+                                .fill(Color(red: 0.4, green: 0.8, blue: 0.9))
+                                .frame(width: geometry.size.width * (audioPlayer.currentTime / audioPlayer.duration), height: 3)
+                                .cornerRadius(1.5)
+                        }
+                    }
+                    .frame(height: 3)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.gray.opacity(0.1))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                )
+        )
+        .onAppear {
+            // Stop any other audio when this card appears
+            if audioPlayer.isPlaying {
+                audioPlayer.stop()
+            }
+        }
     }
     
     private func doodlePreview(image: UIImage) -> some View {
@@ -1254,9 +1770,11 @@ struct NoteComposerSheet: View {
 
 // MARK: - Preview
 
+#if DEBUG
 #Preview {
     ActivityView(
         sessionManager: CoupleSessionManager.preview,
-        authService: AuthService()
+        authService: AuthService(managesDeviceTokens: false)
     )
 }
+#endif

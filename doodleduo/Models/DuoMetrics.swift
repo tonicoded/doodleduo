@@ -31,6 +31,7 @@ struct DuoFarm: Codable, Identifiable {
     let roomId: UUID
     var unlockedAnimals: [String]
     var farmLevel: Int
+    var lastActivityAt: Date?
     let createdAt: Date
 
     var id: UUID { roomId }
@@ -39,6 +40,12 @@ struct DuoFarm: Codable, Identifiable {
         case roomId = "room_id"
         case unlockedAnimals = "unlocked_animals"
         case farmLevel = "farm_level"
+        case lastActivityAt = "last_activity_at"
         case createdAt = "created_at"
+    }
+
+    var farmHealth: FarmHealth? {
+        let referenceActivity = lastActivityAt ?? createdAt
+        return FarmHealth.calculate(from: referenceActivity)
     }
 }

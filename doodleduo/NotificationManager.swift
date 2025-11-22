@@ -9,6 +9,7 @@ import Foundation
 import UserNotifications
 import WidgetKit
 import UIKit
+import Combine
 
 class NotificationManager: NSObject {
     static let shared = NotificationManager()
@@ -20,6 +21,8 @@ class NotificationManager: NSObject {
     // Store device token until user signs in
     private var pendingDeviceToken: Data?
     private let pendingDeviceTokenKey = "doodleduo.pendingDeviceToken"
+    private let sessionQueue = DispatchQueue(label: "com.anthony.doodleduo.notifications.session")
+    private var cachedSession: AuthSession?
 
     private override init() {
         super.init()
@@ -154,7 +157,17 @@ class NotificationManager: NSObject {
         center.delegate = self
     }
     
-    func registerDeviceToken(_ deviceToken: Data, for userId: UUID?) async {
+    func updateAuthSession(_ session: AuthSession?) {
+        sessionQueue.sync {
+            cachedSession = session
+        }
+    }
+    
+    private func currentSession() -> AuthSession? {
+        sessionQueue.sync { cachedSession }
+    }
+    
+    func registerDeviceToken(_ deviceToken: Data, for userId: UUID?, session overrideSession: AuthSession? = nil) async {
         let tokenString = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
         print("📱 Registering device token: \(tokenString)")
 
@@ -163,10 +176,22 @@ class NotificationManager: NSObject {
             savePendingDeviceToken(deviceToken)
             return
         }
+        
+        guard let session = overrideSession ?? currentSession() else {
+            print("⚠️ No auth session available - caching token until session loads")
+            savePendingDeviceToken(deviceToken)
+            return
+        }
 
         // Save device token to Supabase for push notifications
-        await saveDeviceTokenToSupabase(tokenString, userId: userId)
-        clearPendingDeviceToken()
+        let registered = await saveDeviceTokenToSupabase(tokenString, userId: userId, session: session)
+        if registered {
+            print("✅ Device token registered with Supabase")
+            clearPendingDeviceToken()
+        } else {
+            print("⚠️ Failed to register token remotely - caching for retry")
+            savePendingDeviceToken(deviceToken)
+        }
     }
 
     func registerPendingDeviceToken(for userId: UUID) async {
@@ -179,59 +204,58 @@ class NotificationManager: NSObject {
         await registerDeviceToken(token, for: userId)
     }
     
-    private func saveDeviceTokenToSupabase(_ token: String, userId: UUID) async {
+    private var currentPushEnvironment: String {
+        if let override = Bundle.main.object(forInfoDictionaryKey: "APNS_PUSH_ENVIRONMENT") as? String,
+           !override.trimmingCharacters(in: .whitespaces).isEmpty {
+            return override.lowercased()
+        }
+#if DEBUG
+        return "sandbox"
+#else
+        return "production"
+#endif
+    }
+    
+    @discardableResult
+    private func saveDeviceTokenToSupabase(_ token: String, userId: UUID, session: AuthSession) async -> Bool {
         print("💾 Saving device token to Supabase for user: \(userId)")
         
         do {
             let environment = SupabaseEnvironment.makeCurrent()
-            var components = URLComponents(
-                url: environment.restURL.appendingPathComponent("device_tokens"),
-                resolvingAgainstBaseURL: false
-            )
-            components?.queryItems = [
-                URLQueryItem(name: "on_conflict", value: "user_id")
-            ]
-            guard let url = components?.url else {
-                print("❌ Invalid device token URL")
-                return
-            }
+            let url = environment.restURL.appendingPathComponent("rpc/register_device_token")
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             
-            // Get auth session for API call
-            guard let session = AuthService().session else {
-                print("❌ No auth session for device token registration")
-                return
-            }
-            
             request.allHTTPHeaderFields = environment.headers(accessToken: session.accessToken)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("return=representation,resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
             
-            let payload = [
-                "user_id": userId.uuidString,
-                "device_token": token,
-                "platform": "ios"
+            let payload: [String: Any] = [
+                "p_device_token": token,
+                "p_platform": "ios",
+                "p_environment": currentPushEnvironment
             ]
             
             request.httpBody = try JSONSerialization.data(withJSONObject: payload)
             
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
             
             guard let httpResponse = response as? HTTPURLResponse else {
                 print("❌ Invalid response registering device token")
-                return
+                return false
             }
             
             if httpResponse.statusCode >= 400 {
-                print("❌ Device token registration error:", httpResponse.statusCode)
-                return
+                let errorBody = String(data: data, encoding: .utf8) ?? "<no body>"
+                print("❌ Device token registration error:", httpResponse.statusCode, errorBody)
+                return false
             }
             
-            print("✅ Device token registered successfully")
+            print("✅ Device token registered successfully (\(currentPushEnvironment))")
+            return true
             
         } catch {
             print("❌ Error registering device token:", error)
+            return false
         }
     }
     
@@ -266,7 +290,8 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
     }
     
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        // Show notification even when app is in foreground
-        completionHandler([.banner, .sound])
+        // IMPORTANT: Do NOT show notifications when app is in foreground
+        // Only show notifications when app is in background or closed
+        completionHandler([])
     }
 }

@@ -7,36 +7,59 @@
 
 import SwiftUI
 
-struct AnimalView: View {
+struct AnimalView: View, Equatable {
     let name: String
     let isSleeping: Bool
+    var healthSnapshot: AnimalHealthSnapshot? = nil
 
     @State private var walkOffset: CGPoint = .zero
     @State private var isAnimating = false
     @State private var walkDirection: CGFloat = 1 // 1 for right, -1 for left
     @State private var currentTarget: CGPoint = .zero
 
-    var body: some View {
-        ZStack {
-            // Animal image
-            Image(name)
-                .resizable()
-                .scaledToFit()
-                .frame(width: animalSize.width, height: animalSize.height)
-                .opacity(isSleeping ? 0.6 : 1.0)
-                .scaleEffect(x: (isSleeping ? 0.9 : 1.0) * walkDirection, y: isSleeping ? 0.9 : 1.0)
-                .offset(x: walkOffset.x, y: walkOffset.y)
-                .animation(.easeInOut(duration: 0.3), value: walkDirection)
+    // Equatable conformance to prevent unnecessary re-renders
+    static func == (lhs: AnimalView, rhs: AnimalView) -> Bool {
+        lhs.name == rhs.name &&
+        lhs.isSleeping == rhs.isSleeping &&
+        lhs.healthSnapshot == rhs.healthSnapshot
+    }
 
-            // Sleeping indicator
-            if isSleeping {
-                Text("💤")
-                    .font(.title3)
-                    .offset(x: walkOffset.x + 25, y: walkOffset.y - 30)
-                    .opacity(isAnimating ? 1.0 : 0.5)
-                    .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: isAnimating)
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                // Animal image
+                Image(name)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: animalSize.width, height: animalSize.height)
+                    .opacity(isSleeping ? 0.6 : 1.0)
+                    .scaleEffect(x: (isSleeping ? 0.9 : 1.0) * walkDirection, y: isSleeping ? 0.9 : 1.0)
+                    .animation(.easeInOut(duration: 0.3), value: walkDirection)
+                    .contentShape(Circle())
+
+                // Sleeping indicator
+                if isSleeping {
+                    Text("💤")
+                        .font(.title3)
+                        .offset(x: 25, y: -30)
+                        .opacity(isAnimating ? 1.0 : 0.5)
+                        .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: isAnimating)
+                        .allowsHitTesting(false)
+                }
+            }
+
+            // Health bar (if provided)
+            if let snapshot = healthSnapshot {
+                AnimalHealthBadge(snapshot: snapshot)
+                    .allowsHitTesting(false)
+                Text("\(snapshot.formattedHealth) hp")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
+                    .allowsHitTesting(false)
             }
         }
+        .offset(x: walkOffset.x, y: walkOffset.y)
         .onAppear {
             startWalkingAnimation()
         }

@@ -50,7 +50,8 @@ final class WidgetSyncService {
                 DoodleWidgetStore.shared.saveReceivedDoodle(
                     imageData: doodle.imageData,
                     fromPartner: doodle.partnerName,
-                    activityDate: doodle.createdAt
+                    activityDate: doodle.createdAt,
+                    activityID: doodle.activityID
                 )
             }
             print("✅ WidgetSyncService: Stored doodle from \(doodle.partnerName)")
@@ -65,7 +66,7 @@ final class WidgetSyncService {
     
     private func loadContext() async -> SyncContext? {
         await MainActor.run {
-            let authService = AuthService()
+            let authService = AuthService(managesDeviceTokens: false)
             guard let session = authService.session else {
                 return nil
             }
@@ -134,11 +135,17 @@ final class WidgetSyncService {
               let imageData = WidgetSyncService.decodeImage(from: activity.content) else {
             return nil
         }
+
+        if let currentUserID = context.currentUserID, activity.authorID == currentUserID {
+            print("🔁 WidgetSyncService: Ignoring doodle \(activity.id) authored by current user")
+            return nil
+        }
         
         return FetchedDoodle(
             imageData: imageData,
             partnerName: context.partnerDisplayName,
-            createdAt: activity.createdAt
+            createdAt: activity.createdAt,
+            activityID: activity.id
         )
     }
     
@@ -189,4 +196,5 @@ private struct FetchedDoodle {
     let imageData: Data
     let partnerName: String
     let createdAt: Date
+    let activityID: UUID
 }

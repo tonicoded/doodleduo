@@ -23,12 +23,16 @@ struct LatestDoodleProvider: TimelineProvider {
     
     func getTimeline(in context: Context, completion: @escaping (Timeline<LatestDoodleEntry>) -> Void) {
         let snapshot = DoodleWidgetStore.shared.loadLatestDoodle()
+        print("🎨 Widget getTimeline - snapshot loaded: \(snapshot != nil ? "Yes" : "No")")
+        if let snapshot = snapshot {
+            print("🎨 Widget snapshot details: sender=\(snapshot.senderName), date=\(snapshot.updatedAt), isFromPartner=\(snapshot.isFromPartner)")
+        }
         let currentEntry = LatestDoodleEntry(date: Date(), snapshot: snapshot)
         
         // iOS limits widget updates to preserve battery life
         // Use smart refresh intervals based on user engagement patterns
         let refreshInterval: TimeInterval = context.isPreview ? 60 : 300 // 5 minutes for live widgets
-        let nextRefresh = Date().addingTimeInterval(refreshInterval)
+        let _ = Date().addingTimeInterval(refreshInterval)
         
         // Create timeline entries with decreasing frequency
         var entries: [LatestDoodleEntry] = [currentEntry]
@@ -47,7 +51,7 @@ struct LatestDoodleProvider: TimelineProvider {
 
 struct LatestDoodleWidgetEntryView: View {
     var entry: LatestDoodleEntry
-    
+
     private var image: Image? {
         guard let data = entry.snapshot?.imageData,
               let uiImage = UIImage(data: data) else {
@@ -55,7 +59,7 @@ struct LatestDoodleWidgetEntryView: View {
         }
         return Image(uiImage: uiImage)
     }
-    
+
     var body: some View {
         ZStack {
             if let image {
@@ -69,7 +73,7 @@ struct LatestDoodleWidgetEntryView: View {
                             endPoint: .bottom
                         )
                     )
-                
+
                 VStack {
                     Spacer()
                     HStack {
@@ -122,7 +126,7 @@ struct LatestDoodleWidgetBundle: WidgetBundle {
 
 struct LatestDoodleWidget: Widget {
     let kind: String = "LatestDoodleWidget"
-    
+
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: LatestDoodleProvider()) { entry in
             LatestDoodleWidgetEntryView(entry: entry)

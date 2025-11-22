@@ -10,7 +10,12 @@ import Combine
 
 @MainActor
 final class AuthService: ObservableObject {
-    @Published private(set) var session: AuthSession?
+    @Published private(set) var session: AuthSession? {
+        didSet {
+            guard managesDeviceTokens else { return }
+            NotificationManager.shared.updateAuthSession(session)
+        }
+    }
     @Published private(set) var isSignedIn: Bool = false
     @Published private(set) var currentUser: SupabaseAuthUser?
     @Published private(set) var profile: SupabaseProfile?
@@ -30,14 +35,20 @@ final class AuthService: ObservableObject {
     private let decoder: JSONDecoder = AuthService.makeDecoder()
     private let encoder: JSONEncoder = AuthService.makeEncoder()
     
-    init(environment: SupabaseEnvironment? = nil) {
+    private let managesDeviceTokens: Bool
+    
+    init(environment: SupabaseEnvironment? = nil, managesDeviceTokens: Bool = false) {
         self.environment = environment ?? SupabaseEnvironment.makeCurrent()
         self.appleClientID = AuthService.resolveAppleClientID()
+        self.managesDeviceTokens = managesDeviceTokens
         loadCachedDisplayName()
         if let data = UserDefaults.standard.data(forKey: storageKey),
            let saved = try? decoder.decode(AuthSession.self, from: data) {
             session = saved
             isSignedIn = true
+            if managesDeviceTokens {
+                NotificationManager.shared.updateAuthSession(saved)
+            }
             Task {
                 await restoreSession(using: saved)
             }
@@ -60,9 +71,10 @@ final class AuthService: ObservableObject {
         hasLoadedProfile = true
         cacheDisplayName(profile.displayName, userID: response.user.id)
         persistSession(newSession)
-
-        // Register any pending device token now that we're signed in
-        await NotificationManager.shared.registerPendingDeviceToken(for: response.user.id)
+        
+        if managesDeviceTokens {
+            await NotificationManager.shared.registerPendingDeviceToken(for: response.user.id)
+        }
     }
     
     func refreshProfile() async throws {
@@ -143,7 +155,9 @@ final class AuthService: ObservableObject {
                 self.hasLoadedProfile = true
                 cacheDisplayName(profile.displayName, userID: user.id)
             }
-            await NotificationManager.shared.registerPendingDeviceToken(for: user.id)
+            if managesDeviceTokens {
+                await NotificationManager.shared.registerPendingDeviceToken(for: user.id)
+            }
         } catch AuthServiceError.sessionExpired {
             do {
                 let refreshed = try await refreshSession(using: session)

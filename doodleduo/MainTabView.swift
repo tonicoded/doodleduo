@@ -421,9 +421,14 @@ struct MainTabView: View {
     @ObservedObject var authService: AuthService
     @ObservedObject var sessionManager: CoupleSessionManager
     @ObservedObject var audioManager: BackgroundAudioManager
+    @StateObject private var subscriptionManager = SubscriptionManager.shared
     @Environment(\.colorScheme) private var colorScheme
     @State private var selection: Tab = .home
     @State private var refreshLoopTask: Task<Void, Never>?
+    @StateObject private var tutorialFlow = TutorialFlow()
+    @State private var showPaywall = false
+    @State private var enforcePaywall = false
+    private let paywallTimer = Timer.publish(every: 1800, on: .main, in: .common).autoconnect()
     
     var body: some View {
         TabView(selection: $selection) {
@@ -438,13 +443,27 @@ struct MainTabView: View {
                     Label("activity", systemImage: "heart.fill")
                 }
                 .tag(Tab.activity)
+
+            AnimalShopView(sessionManager: sessionManager)
+                .tabItem {
+                    Label("shop", systemImage: "cart.fill")
+                }
+                .tag(Tab.shop)
             
-            SettingsTabView(authService: authService, sessionManager: sessionManager, audioManager: audioManager)
+            SettingsTabView(
+                authService: authService,
+                sessionManager: sessionManager,
+                audioManager: audioManager,
+                subscriptionManager: subscriptionManager,
+                showPaywall: $showPaywall,
+                isPaywallEnforced: enforcePaywall
+            )
                 .tabItem {
                     Label("settings", systemImage: "paintpalette")
                 }
                 .tag(Tab.settings)
         }
+        .allowsHitTesting(!tutorialFlow.isActive)
         .tint(CozyPalette.accentTint(for: colorScheme))
         .background(CozyPalette.background(for: colorScheme).ignoresSafeArea())
         .task {
@@ -454,20 +473,68 @@ struct MainTabView: View {
                 try await sessionManager.refreshMetrics()
                 print("✅ Metrics loaded:", sessionManager.metrics as Any)
                 print("✅ Farm loaded:", sessionManager.farm as Any)
+                
+                // Load ecosystem data from database
+                await sessionManager.loadEcosystemFromDatabase()
+                print("✅ Ecosystem loaded from database")
             } catch {
                 print("❌ Error loading metrics:", error)
             }
+            _ = await WidgetSyncService.shared.syncLatestDoodle(trigger: .backgroundRefresh)
             startGlobalRefreshLoop()
+            evaluatePaywallRequirement()
         }
         .onDisappear {
             refreshLoopTask?.cancel()
             refreshLoopTask = nil
+        }
+        .overlay {
+            if let step = tutorialFlow.currentStep, tutorialFlow.isActive {
+                TutorialOverlayView(
+                    step: step,
+                    isLast: tutorialFlow.isLastStep,
+                    onSkip: {
+                        finishTutorial()
+                    },
+                    onNext: {
+                        handleTutorialAdvance()
+                    }
+                )
+            }
+        }
+        .onAppear {
+            if sessionManager.shouldShowTutorial {
+                startTutorialIfNeeded()
+            }
+            evaluatePaywallRequirement()
+        }
+        .onChange(of: sessionManager.shouldShowTutorial) { _, newValue in
+            if newValue {
+                startTutorialIfNeeded()
+            } else if !newValue {
+                tutorialFlow.stop()
+            }
+        }
+        .onChange(of: tutorialFlow.currentStepIdentifier) { _, _ in
+            if let tab = tutorialFlow.currentStep?.tab {
+                selection = tab
+            }
+        }
+        .onChange(of: sessionManager.survivalStartDate) { _, _ in
+            evaluatePaywallRequirement()
+        }
+        .onChange(of: subscriptionManager.hasActiveSubscription) { _, _ in
+            evaluatePaywallRequirement()
+        }
+        .onReceive(paywallTimer) { _ in
+            evaluatePaywallRequirement()
         }
     }
     
     enum Tab {
         case home
         case activity
+        case shop
         case settings
     }
     
@@ -478,6 +545,8 @@ struct MainTabView: View {
                 await sessionManager.refreshPartnerStatus()
                 do {
                     try await sessionManager.refreshMetrics()
+                    // Refresh ecosystem data periodically
+                    await sessionManager.loadEcosystemFromDatabase()
                 } catch {
                     // swallow background refresh errors
                 }
@@ -485,12 +554,55 @@ struct MainTabView: View {
             }
         }
     }
+
+    private func evaluatePaywallRequirement() {
+        let shouldEnforce = sessionManager.hasClearedTrial && !subscriptionManager.hasActiveSubscription
+        if shouldEnforce {
+            enforcePaywall = true
+            if selection != .settings {
+                selection = .settings
+            }
+            if !showPaywall {
+                showPaywall = true
+            }
+        } else {
+            enforcePaywall = false
+            if subscriptionManager.hasActiveSubscription {
+                showPaywall = false
+            }
+        }
+    }
+
+    private func startTutorialIfNeeded() {
+        guard sessionManager.shouldShowTutorial else { return }
+        if tutorialFlow.start() {
+            if let tab = tutorialFlow.currentStep?.tab {
+                selection = tab
+            }
+        }
+    }
+
+    private func handleTutorialAdvance() {
+        if !tutorialFlow.advance() {
+            finishTutorial()
+        } else if let tab = tutorialFlow.currentStep?.tab {
+            selection = tab
+        }
+    }
+
+    private func finishTutorial() {
+        tutorialFlow.stop()
+        sessionManager.completeTutorialFlow()
+    }
 }
 
 private struct SettingsTabView: View {
     @ObservedObject var authService: AuthService
     @ObservedObject var sessionManager: CoupleSessionManager
     @ObservedObject var audioManager: BackgroundAudioManager
+    @ObservedObject var subscriptionManager: SubscriptionManager
+    @Binding var showPaywall: Bool
+    var isPaywallEnforced: Bool
     @Environment(\.colorScheme) private var colorScheme
     @State private var isEditingName = false
     @ObservedObject private var photoManager = PhotoManager.shared
@@ -512,9 +624,11 @@ private struct SettingsTabView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
+                    premiumCard
                     profileCard
                     duoCard
                     soundCard
+                    legalCard
                     dangerCard
                 }
                 .padding(.horizontal, 20)
@@ -523,6 +637,13 @@ private struct SettingsTabView: View {
             }
             .background(CozyPalette.background(for: colorScheme).ignoresSafeArea())
             .navigationTitle("settings")
+        }
+        .sheet(isPresented: $showPaywall) {
+            PremiumPaywallView(
+                subscriptionManager: subscriptionManager,
+                enforceSubscription: isPaywallEnforced && !subscriptionManager.hasActiveSubscription
+            )
+            .interactiveDismissDisabled(isPaywallEnforced && !subscriptionManager.hasActiveSubscription)
         }
         .sheet(isPresented: $isEditingName) {
             DisplayNamePromptView(authService: authService) {
@@ -537,6 +658,118 @@ private struct SettingsTabView: View {
         }
     }
     
+    private var premiumCard: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .center, spacing: 16) {
+                Image("logo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 64, height: 64)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .shadow(color: .black.opacity(0.15), radius: 8, y: 6)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("doodleduo pro")
+                        .font(.title3.weight(.heavy))
+                        .textCase(.lowercase)
+
+                    if let plan = subscriptionManager.activePlan, subscriptionManager.hasActiveSubscription {
+                        Text("\(plan.marketingName)")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                    } else {
+                        Text("unlock unlimited doodles + farmlove")
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.9))
+                    }
+                }
+
+                Spacer()
+
+                Group {
+                    if subscriptionManager.hasActiveSubscription {
+                        Label("active", systemImage: "checkmark.seal.fill")
+                    } else if isPaywallEnforced {
+                        Label("trial ended", systemImage: "clock.badge.exclamationmark")
+                    } else {
+                        Label("free day", systemImage: "sunrise.fill")
+                    }
+                }
+                .font(.footnote.weight(.bold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Color.white.opacity(0.2)))
+                .foregroundColor(.white)
+            }
+
+            if let plan = subscriptionManager.activePlan,
+               subscriptionManager.hasActiveSubscription {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label("\(plan.marketingName) plan", systemImage: "sparkles")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        if let remaining = subscriptionManager.remainingTimeDescription {
+                            Text("\(remaining) left")
+                                .font(.footnote.weight(.bold))
+                        }
+                    }
+                    if let renewal = subscriptionManager.expirationDescription {
+                        Text("renews \(renewal)")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.95))
+                    } else {
+                        Text("renews automatically while active.")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.95))
+                    }
+                    Text("both partners stay unlocked across every screen.")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.95))
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("both partners access premium content", systemImage: "heart.fill")
+                    Label("keep animals growing past day one", systemImage: "leaf.fill")
+                    Label("unlock yearly savings + cozy skins", systemImage: "wand.and.stars.inverse")
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundColor(.white)
+
+                Button {
+                    showPaywall = true
+                } label: {
+                    Text(isPaywallEnforced ? "subscribe to keep playing" : "view plans")
+                        .font(.headline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(Color.white.opacity(0.2))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(Color.white.opacity(0.35), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.white)
+
+                Text("free access covers day one. after that, subscribe together to keep doodling.")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.85))
+            }
+        }
+        .padding(24)
+        .background(
+            LinearGradient(colors: [Color(#colorLiteral(red: 0.902, green: 0.388, blue: 0.49, alpha: 1)), Color(#colorLiteral(red: 0.659, green: 0.388, blue: 0.729, alpha: 1))],
+                           startPoint: .topLeading,
+                           endPoint: .bottomTrailing)
+                .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+                .shadow(color: .black.opacity(0.15), radius: 20, y: 12)
+        )
+    }
+
     private var profileCard: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("your profile")
@@ -637,6 +870,33 @@ private struct SettingsTabView: View {
                 .foregroundColor(.primary)
             }
             .buttonStyle(.plain)
+        }
+        .padding(20)
+        .background(cardBackground)
+    }
+
+    private var legalCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("policies")
+                .font(.headline)
+            Text("doodleduo is built for calm relationships. review the documents below any time.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            HStack(spacing: 12) {
+                Link(destination: LegalLinks.privacy) {
+                    Label("Privacy Policy", systemImage: "lock.shield")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+
+                Link(destination: LegalLinks.terms) {
+                    Label("Terms", systemImage: "doc.text")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
         }
         .padding(20)
         .background(cardBackground)
@@ -752,6 +1012,153 @@ private struct SettingsTabView: View {
             }
         }
         return value
+    }
+}
+
+private struct TutorialStep: Identifiable {
+    let id = UUID()
+    let tab: MainTabView.Tab
+    let title: String
+    let message: String
+}
+
+private final class TutorialFlow: ObservableObject {
+    @Published private(set) var isActive = false
+    @Published private(set) var currentIndex = 0
+
+    private let steps: [TutorialStep] = [
+        TutorialStep(
+            tab: .home,
+            title: "Welcome to your farm",
+            message: "This is where your animals live. Keep them fed with plants every day to survive together."
+        ),
+        TutorialStep(
+            tab: .activity,
+            title: "Stay close in activity",
+            message: "Send activities, love notes, and pings here. Staying active earns love energy for plants."
+        ),
+        TutorialStep(
+            tab: .shop,
+            title: "Visit the shop",
+            message: "Spend love points on plants to heal animals or unlock new friends for your cozy farm."
+        ),
+        TutorialStep(
+            tab: .settings,
+            title: "Customize your vibe",
+            message: "Tinker with audio, pairing, and premium. doodleduo is free on day zero—once your duo survives day one you'll need a subscription to keep the farm growing."
+        )
+    ]
+
+    var currentStep: TutorialStep? {
+        guard isActive, currentIndex < steps.count else { return nil }
+        return steps[currentIndex]
+    }
+
+    var isLastStep: Bool {
+        guard isActive else { return false }
+        return currentIndex >= steps.count - 1
+    }
+
+    var currentStepIdentifier: UUID? {
+        currentStep?.id
+    }
+
+    @discardableResult
+    func start() -> Bool {
+        guard !steps.isEmpty else { return false }
+        currentIndex = 0
+        isActive = true
+        return true
+    }
+
+    @discardableResult
+    func advance() -> Bool {
+        guard isActive else { return false }
+        if currentIndex < steps.count - 1 {
+            currentIndex += 1
+            return true
+        } else {
+            isActive = false
+            return false
+        }
+    }
+
+    func stop() {
+        isActive = false
+    }
+}
+
+private struct TutorialOverlayView: View {
+    let step: TutorialStep
+    let isLast: Bool
+    let onSkip: () -> Void
+    let onNext: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.65)
+                .ignoresSafeArea()
+
+            VStack {
+                Spacer()
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(step.title)
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(.white)
+
+                    Text(step.message)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack {
+                        Button("skip tutorial") {
+                            onSkip()
+                        }
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.7))
+
+                        Spacer()
+
+                        Button {
+                            onNext()
+                        } label: {
+                            Text(isLast ? "let's play" : "next")
+                                .font(.headline.weight(.bold))
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 10)
+                                .background(
+                                    Capsule()
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [
+                                                    Color(red: 0.99, green: 0.63, blue: 0.32),
+                                                    Color(red: 0.93, green: 0.36, blue: 0.47)
+                                                ],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            )
+                                        )
+                                )
+                                .foregroundStyle(.white)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(24)
+                .background(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(Color.white.opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                        )
+                )
+                .padding(.horizontal, 24)
+                .padding(.bottom, 40)
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: step.id)
     }
 }
 

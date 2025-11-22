@@ -13,7 +13,13 @@ interface NotificationPayload {
   partner_name?: string
   activity_id?: string
   widget_refresh?: boolean
+  environment?: 'production' | 'sandbox'
 }
+
+type ApnsEnvironment = 'production' | 'sandbox'
+
+const defaultEnvironment: ApnsEnvironment =
+  Deno.env.get('APNS_PRODUCTION') === 'true' ? 'production' : 'sandbox'
 
 serve(async (req) => {
   // Handle CORS preflight requests
@@ -51,21 +57,35 @@ serve(async (req) => {
       widget_refresh: shouldRefreshWidget
     }
 
-    // Send to APNs (Apple Push Notification service)
-    const apnsResponse = await sendToAPNs(payload.device_token, apnsPayload)
+    const resolvedEnvironment = resolveEnvironment(payload.environment)
+    let apnsResponse = await sendToAPNs(payload.device_token, apnsPayload, resolvedEnvironment)
+    let errorBody: string | null = null
 
-    console.log('✅ APNs response:', apnsResponse.status)
-
-    // Log error details if not successful
     if (!apnsResponse.ok) {
-      const errorBody = await apnsResponse.text()
+      errorBody = await apnsResponse.text()
       console.error('❌ APNs error response:', errorBody)
+
+      if (shouldRetryForEnvironment(errorBody)) {
+        const fallbackEnv: ApnsEnvironment = resolvedEnvironment === 'production' ? 'sandbox' : 'production'
+        console.log(`🔁 Retrying via ${fallbackEnv} APNs environment...`)
+        apnsResponse = await sendToAPNs(payload.device_token, apnsPayload, fallbackEnv)
+        if (!apnsResponse.ok) {
+          const retryBody = await apnsResponse.text()
+          console.error('❌ APNs retry error response:', retryBody)
+          errorBody = retryBody
+        } else {
+          errorBody = null
+        }
+      }
     }
+
+    console.log('✅ APNs response:', apnsResponse.status, 'env:', resolvedEnvironment, errorBody ? '(with retry)' : '')
 
     return new Response(
       JSON.stringify({
         success: apnsResponse.ok,
-        status: apnsResponse.status
+        status: apnsResponse.status,
+        environment: resolvedEnvironment
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -119,14 +139,28 @@ function getNotificationBody(activityType: string, content?: string): string {
   }
 }
 
-async function sendToAPNs(deviceToken: string, payload: any): Promise<Response> {
-  // Check if we should use production or sandbox APNs
-  const isProduction = Deno.env.get('APNS_PRODUCTION') === 'true'
-  const apnsUrl = isProduction
+function resolveEnvironment(value?: string): ApnsEnvironment {
+  if (!value) return defaultEnvironment
+  return value.toLowerCase() === 'sandbox' ? 'sandbox' : 'production'
+}
+
+function shouldRetryForEnvironment(errorBody: string | null): boolean {
+  if (!errorBody) return false
+  try {
+    const parsed = JSON.parse(errorBody)
+    const reason = parsed?.reason as string | undefined
+    return reason === 'BadEnvironment' || reason === 'BadDeviceToken' || reason === 'BadEnvironmentKeyInToken'
+  } catch {
+    return false
+  }
+}
+
+async function sendToAPNs(deviceToken: string, payload: any, environment: ApnsEnvironment): Promise<Response> {
+  const apnsUrl = environment === 'production'
     ? `https://api.push.apple.com/3/device/${deviceToken}`
     : `https://api.sandbox.push.apple.com/3/device/${deviceToken}`
 
-  console.log('📡 Using APNs environment:', isProduction ? 'Production' : 'Sandbox')
+  console.log('📡 Using APNs environment:', environment === 'production' ? 'Production' : 'Sandbox')
   
   // You'll need to set these in Supabase environment variables
   const teamId = Deno.env.get('APPLE_TEAM_ID') || 'YOUR_TEAM_ID'

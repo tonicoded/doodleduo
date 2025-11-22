@@ -125,7 +125,7 @@ struct SignInPromptView: View {
 }
 
 #Preview {
-    SignInPromptView(service: AuthService(), onFinish: { _ in })
+    SignInPromptView(service: AuthService(managesDeviceTokens: false), onFinish: { _ in })
         .environment(\.colorScheme, .light)
 }
 

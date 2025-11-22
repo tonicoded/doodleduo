@@ -42,7 +42,7 @@ struct ContentView: View {
     }
     
     init() {
-        let authService = AuthService()
+        let authService = AuthService(managesDeviceTokens: true)
         _authService = StateObject(wrappedValue: authService)
         _coupleManager = StateObject(wrappedValue: CoupleSessionManager(authService: authService))
         _audioManager = StateObject(wrappedValue: BackgroundAudioManager())

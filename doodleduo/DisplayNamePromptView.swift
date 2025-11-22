@@ -92,5 +92,5 @@ struct DisplayNamePromptView: View {
 }
 
 #Preview {
-    DisplayNamePromptView(authService: AuthService(), onComplete: {})
+    DisplayNamePromptView(authService: AuthService(managesDeviceTokens: false), onComplete: {})
 }

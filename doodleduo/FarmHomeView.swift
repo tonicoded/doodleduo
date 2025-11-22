@@ -11,23 +11,34 @@ struct FarmHomeView: View {
     @ObservedObject private var sessionManager: CoupleSessionManager
     private let calendar = Calendar.autoupdatingCurrent
     @State private var clockPulse = false
-    
+    @State private var showGameOver = false
+    @State private var cachedSnapshots: [AnimalHealthSnapshot] = []
+
     init(sessionManager: CoupleSessionManager) {
         _sessionManager = ObservedObject(wrappedValue: sessionManager)
     }
-    
+
     #if DEBUG
     init() {
         _sessionManager = ObservedObject(wrappedValue: .preview)
     }
     #endif
-    
+
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             content(for: context.date)
         }
         .onAppear {
             clockPulse = true
+            checkGameOver()
+        }
+        .onChange(of: sessionManager.farm?.farmHealth?.isDead) { _, isDead in
+            if isDead == true {
+                showGameOver = true
+            }
+        }
+        .onChange(of: sessionManager.isGameOver) { _, isGameOver in
+            showGameOver = isGameOver
         }
     }
     
@@ -47,25 +58,95 @@ struct FarmHomeView: View {
                 // Animals layer
                 animalLayers(screenWidth: proxy.size.width, screenHeight: proxy.size.height)
 
-                VStack(alignment: .leading, spacing: 16) {
-                    header(for: date, isDaytime: isDaytime)
-                        .padding(.horizontal, 20)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .center, spacing: 0) {
+                    // Combined header with time, stats, and names
+                    VStack(spacing: 20) {
+                        // Time display at the top center
+                        timeDisplay(for: date)
+                        
+                        // Stats row
+                        HStack(spacing: 12) {
+                            StatBadge(
+                                icon: "heart.fill",
+                                label: "love points",
+                                value: "\(affectionScore)",
+                                gradient: [
+                                    Color(red: 0.98, green: 0.63, blue: 0.71),
+                                    Color(red: 0.93, green: 0.27, blue: 0.36)
+                                ],
+                                glowColor: Color(red: 0.93, green: 0.27, blue: 0.36),
+                                animateHeart: true,
+                                symbolColor: Color(red: 1.0, green: 0.82, blue: 0.88)
+                            )
+
+                            SurvivalBadge(
+                                timeText: survivalTimeText,
+                                gradient: [
+                                    Color(red: 1.0, green: 0.72, blue: 0.58),
+                                    Color(red: 0.99, green: 0.63, blue: 0.32)
+                                ],
+                                glowColor: Color(red: 0.99, green: 0.63, blue: 0.32)
+                            )
+                        }
+                        
+                        // User names and room label
+                        VStack(spacing: 8) {
+                            if let names = duoNames {
+                                DuoNamesRow(left: names.left, right: names.right)
+                                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                            }
+                            
+                            if let label = roomLabel {
+                                Text(label.lowercased())
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.white.opacity(0.85))
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 6)
+                                    .background(
+                                        Capsule()
+                                            .fill(Color.black.opacity(0.2))
+                                            .overlay(
+                                                Capsule()
+                                                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                                            )
+                                    )
+                                    .shadow(color: .black.opacity(0.2), radius: 10, y: 6)
+                                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, safeTop + 60)
+                    
                     Spacer()
+                    
+                    // Ecosystem health monitoring at bottom
+                    VStack(spacing: 0) {
+                        EcosystemHealthView(sessionManager: sessionManager)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 100) // Add more bottom padding to clear tab bar
+                    }
                 }
-                .padding(.top, safeTop + 72)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
             .animation(.spring(response: 0.6, dampingFraction: 0.85), value: isDaytime)
             .ignoresSafeArea()
-            .overlay(alignment: .top) {
-                timeDisplay(for: date)
-                    .padding(.top, max(safeTop + 32, 68))
-            }
         }
         .ignoresSafeArea()
+        .fullScreenCover(isPresented: $showGameOver) {
+            if sessionManager.metrics != nil {
+                GameOverView(
+                    survivalDuration: survivalTimeText,
+                    bestRunDuration: bestRunText,
+                    onRestart: {
+                        await sessionManager.restartFarm()
+                    }
+                )
+            }
+        }
     }
     
     private func backgroundImage(isDaytime: Bool) -> some View {
@@ -74,60 +155,6 @@ struct FarmHomeView: View {
             .scaledToFill()
     }
     
-    @ViewBuilder
-    private func header(for date: Date, isDaytime: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            StatBadge(
-                icon: "heart.fill",
-                label: "love points",
-                value: "\(affectionScore)",
-                gradient: [
-                    Color(red: 0.98, green: 0.63, blue: 0.71),
-                    Color(red: 0.93, green: 0.27, blue: 0.36)
-                ],
-                glowColor: Color(red: 0.93, green: 0.27, blue: 0.36),
-                animateHeart: true,
-                symbolColor: Color(red: 1.0, green: 0.82, blue: 0.88)
-            )
-            
-            StatBadge(
-                icon: "flame.fill",
-                label: "streak",
-                value: "\(streakScore)",
-                gradient: [
-                    Color(red: 1.0, green: 0.66, blue: 0.27),
-                    Color(red: 1.0, green: 0.39, blue: 0.19),
-                    Color(red: 0.85, green: 0.18, blue: 0.22)
-                ],
-                glowColor: Color(red: 1.0, green: 0.45, blue: 0.2),
-                showFire: true,
-                symbolColor: Color(red: 1.0, green: 0.74, blue: 0.28)
-            )
-            
-            if let names = duoNames {
-                DuoNamesRow(left: names.left, right: names.right)
-                    .transition(.opacity.combined(with: .move(edge: .leading)))
-                
-                if let label = roomLabel {
-                    Text(label.lowercased())
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.85))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(
-                            Capsule()
-                                .fill(Color.black.opacity(0.2))
-                                .overlay(
-                                    Capsule()
-                                        .stroke(Color.white.opacity(0.15), lineWidth: 1)
-                                )
-                        )
-                        .shadow(color: .black.opacity(0.2), radius: 10, y: 6)
-                        .transition(.opacity.combined(with: .move(edge: .leading)))
-                }
-            }
-        }
-    }
     
     private var affectionScore: Int {
         let score = sessionManager.metrics?.loveEnergy ?? 0
@@ -135,21 +162,44 @@ struct FarmHomeView: View {
         return score
     }
 
-    private var streakScore: Int {
-        let score = sessionManager.metrics?.currentStreak ?? 0
-        print("🔥 Streak:", score)
-        return score
+    private var survivalTimeText: String {
+        guard let farm = sessionManager.farm else { 
+            return "0d 0h 0m"
+        }
+        
+        let survivalStart = sessionManager.survivalStartDate ?? farm.createdAt
+        let now = Date()
+        let elapsed = now.timeIntervalSince(survivalStart)
+        
+        let days = Int(elapsed / (24 * 3600))
+        let hours = Int((elapsed.truncatingRemainder(dividingBy: 24 * 3600)) / 3600)
+        let minutes = Int((elapsed.truncatingRemainder(dividingBy: 3600)) / 60)
+        
+        let result = "\(days)d \(hours)h \(minutes)m"
+        print("📅 Real survival time:", result)
+        return result
+    }
+
+    private var bestRunText: String? {
+        guard let longest = sessionManager.metrics?.longestStreak, longest > 0 else {
+            return nil
+        }
+        return formattedDuration(days: longest)
+    }
+
+    private func formattedDuration(days: Int) -> String {
+        let hours = days * 24
+        let dayComponent = hours / 24
+        return "\(dayComponent)d 0h 0m"
     }
     
-    @ViewBuilder
     private func timeDisplay(for date: Date) -> some View {
         Text(date.formatted(.dateTime.hour().minute()))
             .font(.system(size: 44, weight: .bold, design: .rounded))
             .foregroundStyle(.white)
-            .shadow(color: .black.opacity(0.6), radius: 18, y: 8)
+            .shadow(color: .black.opacity(0.45), radius: 14, y: 6)
             .scaleEffect(clockPulse ? 1.02 : 0.98)
             .animation(.easeInOut(duration: 3.5).repeatForever(autoreverses: true), value: clockPulse)
-            .frame(maxWidth: .infinity, alignment: .center)
     }
     
     private var duoNames: (left: String, right: String?)? {
@@ -229,18 +279,37 @@ struct FarmHomeView: View {
     @ViewBuilder
     private func animalLayers(screenWidth: CGFloat, screenHeight: CGFloat) -> some View {
         if let farm = sessionManager.farm {
-            let unlockedAnimals = farm.unlockedAnimals
-            let _ = print("🐔 Farm loaded! Animals:", unlockedAnimals)
+            let newSnapshots = animalHealthSnapshots(for: farm)
 
-            // Position animals on the farm
+            // Only update cached snapshots if they've actually changed
+            let _ = updateCachedSnapshotsIfNeeded(newSnapshots)
+
             ZStack {
-                ForEach(Array(unlockedAnimals.enumerated()), id: \.offset) { index, animalName in
-                    AnimalView(name: animalName, isSleeping: false)
-                        .position(animalPosition(for: animalName, index: index, screenWidth: screenWidth, screenHeight: screenHeight))
+                ForEach(Array(cachedSnapshots.enumerated()), id: \.1.id) { index, snapshot in
+                    let position = animalPosition(for: snapshot.id, index: index, screenWidth: screenWidth, screenHeight: screenHeight)
+
+                    AnimalView(
+                        name: snapshot.id,
+                        isSleeping: false,
+                        healthSnapshot: snapshot
+                    )
+                    .equatable()
+                    .position(position)
                 }
             }
-        } else {
-            let _ = print("❌ Farm is NIL - no data loaded!")
+        }
+    }
+
+    private func updateCachedSnapshotsIfNeeded(_ newSnapshots: [AnimalHealthSnapshot]) {
+        // Check if snapshots have actually changed (using Equatable)
+        let hasChanged = cachedSnapshots.count != newSnapshots.count ||
+            zip(cachedSnapshots, newSnapshots).contains(where: { $0 != $1 })
+
+        if hasChanged {
+            print("🔄 Updating cached snapshots: \(newSnapshots.map { "\($0.id): \($0.formattedHealth)" })")
+            DispatchQueue.main.async {
+                cachedSnapshots = newSnapshots
+            }
         }
     }
 
@@ -266,9 +335,105 @@ struct FarmHomeView: View {
         }
     }
 
+    private func animalHealthSnapshots(for farm: DuoFarm) -> [AnimalHealthSnapshot] {
+        let animals = farm.unlockedAnimals.compactMap { AnimalCatalog.animal(byID: $0) }
+        guard !animals.isEmpty else { return [] }
+
+        // ONLY use animal health from ecosystem if it has actual data loaded from database
+        // Don't show animals with default 100% health while waiting for database
+        if let ecosystem = sessionManager.ecosystem, !ecosystem.animalHealthMap.isEmpty {
+            // Deduplicate health records per animal type, preferring the BEST health (highest HP)
+            // This ensures we show the correct animal even if there are duplicates in the database
+            let latestHealthByType: [String: AnimalHealth] = ecosystem.animalHealthMap.values.reduce(into: [:]) { result, health in
+                if let existing = result[health.animalType] {
+                    // Prefer higher HP; if equal, take the fresher feed time
+                    if health.hoursUntilDeath > existing.hoursUntilDeath ||
+                        (abs(health.hoursUntilDeath - existing.hoursUntilDeath) < 0.001 && health.lastFedAt > existing.lastFedAt) {
+                        result[health.animalType] = health
+                    }
+                } else {
+                    result[health.animalType] = health
+                }
+            }
+
+            return animals.map { info in
+                if let animalHealth = latestHealthByType[info.id] {
+                    return AnimalHealthSnapshot(
+                        info: info,
+                        accentColor: accentColor(for: info.id),
+                        healthPercentage: animalHealth.healthPercentage,
+                        hoursRemaining: animalHealth.hoursUntilDeath,
+                        lastCareDate: animalHealth.lastFedAt
+                    )
+                } else {
+                    // Animal hasn't been initialized yet, show as full health
+                    return AnimalHealthSnapshot(
+                        info: info,
+                        accentColor: accentColor(for: info.id),
+                        healthPercentage: 1.0,
+                        hoursRemaining: 24.0,
+                        lastCareDate: Date()
+                    )
+                }
+            }
+        } else {
+            // Fallback to old system if ecosystem not loaded yet
+            guard let farmHealth = farm.farmHealth else { return [] }
+            
+            let penaltyStep = 0.08
+            let hoursStep = 1.2
+
+            return animals.enumerated().map { index, info in
+                let penalty = Double(index) * penaltyStep
+                let adjustedHealth = max(0.05, min(1.0, farmHealth.healthPercentage - penalty))
+                let adjustedHours = max(0, farmHealth.hoursUntilDeath - Double(index) * hoursStep)
+
+                return AnimalHealthSnapshot(
+                    info: info,
+                    accentColor: accentColor(for: info.id),
+                    healthPercentage: adjustedHealth,
+                    hoursRemaining: adjustedHours,
+                    lastCareDate: farmHealth.lastActivityAt
+                )
+            }
+        }
+    }
+
+    private func accentColor(for animalID: String) -> Color {
+        switch animalID {
+        case "chicken":
+            return Color(red: 1.0, green: 0.82, blue: 0.41)
+        case "sheep":
+            return Color(red: 0.76, green: 0.86, blue: 0.98)
+        case "pig":
+            return Color(red: 0.98, green: 0.68, blue: 0.74)
+        case "horse":
+            return Color(red: 0.73, green: 0.58, blue: 0.92)
+        case "duck":
+            return Color(red: 0.99, green: 0.79, blue: 0.45)
+        case "goat":
+            return Color(red: 0.65, green: 0.86, blue: 0.62)
+        case "cow":
+            return Color(red: 0.9, green: 0.85, blue: 0.77)
+        default:
+            return Color(red: 0.82, green: 0.72, blue: 0.95)
+        }
+    }
+
     private func isDaytime(date: Date) -> Bool {
         let hour = calendar.component(.hour, from: date)
         return hour >= 6 && hour < 19
+    }
+
+    private func checkGameOver() {
+        if sessionManager.isGameOver {
+            showGameOver = true
+            return
+        }
+
+        if let farmHealth = sessionManager.farm?.farmHealth, farmHealth.isDead {
+            showGameOver = true
+        }
     }
 }
 
@@ -276,7 +441,7 @@ private struct DuoNamesRow: View {
     let left: String
     let right: String?
     private let heartColor = Color(red: 0.93, green: 0.27, blue: 0.36)
-    
+
     var body: some View {
         HStack(spacing: 10) {
             Text(left.lowercased())
@@ -305,6 +470,8 @@ private struct DuoNamesRow: View {
     }
 }
 
+#if DEBUG
 #Preview {
-    FarmHomeView()
+    FarmHomeView(sessionManager: .preview)
 }
+#endif

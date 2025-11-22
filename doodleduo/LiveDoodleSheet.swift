@@ -118,6 +118,7 @@ struct LiveDoodleSheet: View {
         .font(.callout)
     }
     
+    
     private var sendOverlayButton: some View {
         Button {
             Task { await sendDrawing() }
